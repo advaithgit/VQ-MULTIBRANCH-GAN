@@ -24,6 +24,7 @@ class VQModel(pl.LightningModule):
                  sane_index_shape=False,  # tell vector quantizer to return indices as bhw
                  ):
         super().__init__()
+        self.automatic_optimization = False
         self.image_key = image_key
         self.encoder = Encoder(**ddconfig)
         self.decoder = Decoder(**ddconfig)
@@ -80,26 +81,47 @@ class VQModel(pl.LightningModule):
         x = x.permute(0, 3, 1, 2).to(memory_format=torch.contiguous_format)
         return x.float()
 
-    def training_step(self, batch, batch_idx, optimizer_idx):
-        x = self.get_input(batch, self.image_key)
-        xrec, qloss = self(x)
+    def training_step(self, batch, batch_idx):
+          # Get optimizers
+          opt_ae, opt_disc = self.optimizers()
+    
+          # Get input
+          x = self.get_input(batch, self.image_key)
+          xrec, qloss = self(x)
 
-        if optimizer_idx == 0:
-            # autoencode
-            aeloss, log_dict_ae = self.loss(qloss, x, xrec, optimizer_idx, self.global_step,
-                                            last_layer=self.get_last_layer(), split="train")
+          # Train autoencoder
+          opt_ae.zero_grad()
+          aeloss, log_dict_ae = self.loss(qloss, x, xrec, 0, self.global_step,
+                                   last_layer=self.get_last_layer(), split="train")
+          self.manual_backward(aeloss)
+    
+          # Manual gradient clipping
+          torch.nn.utils.clip_grad_norm_(list(self.encoder.parameters()) +
+                                  list(self.decoder.parameters()) +
+                                  list(self.quantize.parameters()) +
+                                  list(self.quant_conv.parameters()) +
+                                  list(self.post_quant_conv.parameters()),
+                                  max_norm=0.5)
+          opt_ae.step()
 
-            self.log("train/aeloss", aeloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
-            self.log_dict(log_dict_ae, prog_bar=False, logger=True, on_step=True, on_epoch=True)
-            return aeloss
+          # Train discriminator
+          opt_disc.zero_grad()
+          discloss, log_dict_disc = self.loss(qloss, x, xrec, 1, self.global_step,
+                                       last_layer=self.get_last_layer(), split="train")
+          self.manual_backward(discloss)
+    
+          # Manual gradient clipping for discriminator
+          torch.nn.utils.clip_grad_norm_(self.loss.discriminator.parameters(),
+                                  max_norm=0.5)
+          opt_disc.step()
 
-        if optimizer_idx == 1:
-            # discriminator
-            discloss, log_dict_disc = self.loss(qloss, x, xrec, optimizer_idx, self.global_step,
-                                            last_layer=self.get_last_layer(), split="train")
-            self.log("train/discloss", discloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
-            self.log_dict(log_dict_disc, prog_bar=False, logger=True, on_step=True, on_epoch=True)
-            return discloss
+          # Logging
+          self.log("train/aeloss", aeloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+          self.log("train/discloss", discloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+          self.log_dict(log_dict_ae, prog_bar=False, logger=True, on_step=True, on_epoch=True)
+          self.log_dict(log_dict_disc, prog_bar=False, logger=True, on_step=True, on_epoch=True)
+    
+          return aeloss + discloss
 
     def validation_step(self, batch, batch_idx):
           x = self.get_input(batch, self.image_key)
@@ -288,7 +310,7 @@ class GumbelVQ(VQModel):
                          colorize_nlabels=colorize_nlabels,
                          monitor=monitor,
                          )
-
+        self.automatic_optimization = False
         self.loss.n_classes = n_embed
         self.vocab_size = n_embed
 
@@ -313,26 +335,53 @@ class GumbelVQ(VQModel):
     def decode_code(self, code_b):
         raise NotImplementedError
 
-    def training_step(self, batch, batch_idx, optimizer_idx):
-        self.temperature_scheduling()
-        x = self.get_input(batch, self.image_key)
-        xrec, qloss = self(x)
+    def training_step(self, batch, batch_idx):
+          # Get optimizers
+          opt_ae, opt_disc = self.optimizers()
+    
+          self.temperature_scheduling()
+          x = self.get_input(batch, self.image_key)
+          xrec, qloss = self(x)
 
-        if optimizer_idx == 0:
-            # autoencode
-            aeloss, log_dict_ae = self.loss(qloss, x, xrec, optimizer_idx, self.global_step,
-                                            last_layer=self.get_last_layer(), split="train")
+          # Train autoencoder
+          opt_ae.zero_grad()
+          aeloss, log_dict_ae = self.loss(qloss, x, xrec, 0, self.global_step,
+                                   last_layer=self.get_last_layer(), split="train")
+          self.manual_backward(aeloss)
+    
+          # Manual gradient clipping
+          torch.nn.utils.clip_grad_norm_(list(self.encoder.parameters()) +
+                                  list(self.decoder.parameters()) +
+                                  list(self.quantize.parameters()) +
+                                  list(self.quant_conv.parameters()) +
+                                  list(self.post_quant_conv.parameters()),
+                                  max_norm=0.5)
+          opt_ae.step()
 
-            self.log_dict(log_dict_ae, prog_bar=False, logger=True, on_step=True, on_epoch=True)
-            self.log("temperature", self.quantize.temperature, prog_bar=False, logger=True, on_step=True, on_epoch=True)
-            return aeloss
+          # Train discriminator
+          opt_disc.zero_grad()
+          discloss, log_dict_disc = self.loss(qloss, x, xrec, 1, self.global_step,
+                                       last_layer=self.get_last_layer(), split="train")
+          self.manual_backward(discloss)
+    
+          # Manual gradient clipping for discriminator
+          torch.nn.utils.clip_grad_norm_(self.loss.discriminator.parameters(),
+                                  max_norm=0.5)
+          opt_disc.step()
 
-        if optimizer_idx == 1:
+          # Logging
+          self.log_dict(log_dict_ae, prog_bar=False, logger=True, on_step=True, on_epoch=True)
+          self.log_dict(log_dict_disc, prog_bar=False, logger=True, on_step=True, on_epoch=True)
+          self.log("temperature", self.quantize.temperature, prog_bar=False, logger=True, on_step=True, on_epoch=True)
+    
+          return aeloss + discloss
+
+          #if optimizer_idx == 1:
             # discriminator
-            discloss, log_dict_disc = self.loss(qloss, x, xrec, optimizer_idx, self.global_step,
-                                            last_layer=self.get_last_layer(), split="train")
-            self.log_dict(log_dict_disc, prog_bar=False, logger=True, on_step=True, on_epoch=True)
-            return discloss
+           # discloss, log_dict_disc = self.loss(qloss, x, xrec, optimizer_idx, self.global_step,
+                                           # last_layer=self.get_last_layer(), split="train")
+            #self.log_dict(log_dict_disc, prog_bar=False, logger=True, on_step=True, on_epoch=True)
+           # return discloss
 
     def validation_step(self, batch, batch_idx):
         x = self.get_input(batch, self.image_key)
