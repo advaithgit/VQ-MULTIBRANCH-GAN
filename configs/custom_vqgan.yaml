@@ -28,17 +28,17 @@ model:
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 5
+    batch_size: 4
     num_workers: 2
     train:
       target: taming.data.custom.CustomTrain
       params:
-        training_images_list_file: /content/vqgantest/data/ade20k_examples.txt
+        training_images_list_file: /content/text_training.txt
         size: 256
     validation:
       target: taming.data.custom.CustomTest
       params:
-        test_images_list_file: /content/vqgantest/data/ade20k_examples.txt
+        test_images_list_file: /content/text_test.txt
         size: 256
 
 lightning:
