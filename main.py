@@ -10,8 +10,20 @@ from pytorch_lightning import seed_everything
 from pytorch_lightning.trainer import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, Callback, LearningRateMonitor
 from pytorch_lightning.utilities import rank_zero_only
-
+import torch
 from taming.data.utils import custom_collate
+
+
+
+# Performance optimizations
+torch.backends.cudnn.benchmark = True
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512"
+
+# Optional: for even more speed but slightly less stability
+torch.backends.cudnn.deterministic = False
+torch.backends.cudnn.enabled = True
 
 
 def get_obj_from_str(string, reload=False):
@@ -108,7 +120,16 @@ def get_parser(**parser_kwargs):
 
 def nondefault_trainer_args(opt):
     parser = argparse.ArgumentParser()
-    parser = Trainer.add_argparse_args(parser)
+    #parser = Trainer.add_argparse_args(parser)
+    parser.add_argument("--accelerator", default="auto")
+    parser.add_argument("--devices", default="auto")
+    parser.add_argument("--num_nodes", type=int, default=1)
+    parser.add_argument("--precision", default="32-true")
+    parser.add_argument("--strategy", default="auto")
+    parser.add_argument("--max_epochs", type=int, default=1000)
+    parser.add_argument("--accumulate_grad_batches", type=int, default=1)
+    parser.add_argument("--check_val_every_n_epoch", type=int, default=1)
+    parser.add_argument("--gradient_clip_val", type=float, default=0.5)
     args = parser.parse_args([])
     return sorted(k for k in vars(args) if getattr(opt, k) != getattr(args, k))
 
@@ -138,11 +159,14 @@ class DataModuleFromConfig(pl.LightningDataModule):
                  validation=None, 
                  test=None,
                  wrap=False, 
-                 num_workers=None):
+                 num_workers=None,
+                 pin_memory=True,
+                 prefetch_factor=2):
         super().__init__()
         self.batch_size = batch_size
         self.dataset_configs = dict()
-        
+        self.pin_memory = pin_memory
+        self.prefetch_factor = prefetch_factor
         # Improved num_workers calculation
         if num_workers is None:
             try:
@@ -473,8 +497,22 @@ if __name__ == "__main__":
     sys.path.append(os.getcwd())
 
     parser = get_parser()
-    parser = Trainer.add_argparse_args(parser)
-
+    #parser = Trainer.add_argparse_args(parser)
+    parser.add_argument("--accelerator", default="auto")
+    parser.add_argument("--devices", default="auto")
+    parser.add_argument("--num_nodes", type=int, default=1)
+    parser.add_argument("--precision", default="32-true")
+    parser.add_argument("--strategy", default="auto")
+    parser.add_argument("--max_epochs", type=int, default=1000)
+    parser.add_argument("--accumulate_grad_batches", type=int, default=1)
+    parser.add_argument("--check_val_every_n_epoch", type=int, default=1)
+    #parser.add_argument("--gradient_clip_val", type=float, default=0.5)
+    parser.add_argument(
+    "--gpus",
+    type=str,
+    default=None,
+    help="Number of GPUs to use (e.g., '0,' or '0,1,2,3')"
+    )
     opt, unknown = parser.parse_known_args()
     if opt.name and opt.resume:
         raise ValueError(
@@ -524,17 +562,14 @@ if __name__ == "__main__":
         lightning_config = config.pop("lightning", OmegaConf.create())
         # merge trainer cli with config
         trainer_config = lightning_config.get("trainer", OmegaConf.create())
-        # default to ddp
-        trainer_config["distributed_backend"] = "ddp"
-        for k in nondefault_trainer_args(opt):
-            trainer_config[k] = getattr(opt, k)
-        if not "gpus" in trainer_config:
-            del trainer_config["distributed_backend"]
-            cpu = True
+        if torch.cuda.is_available():
+          trainer_config["accelerator"] = "gpu"
+          trainer_config["devices"] = -1  # Use all available GPUs
+          cpu = False
         else:
-            gpuinfo = trainer_config["gpus"]
-            print(f"Running on GPUs {gpuinfo}")
-            cpu = False
+          trainer_config["accelerator"] = "cpu"
+          trainer_config["devices"] = None
+          cpu = True
         trainer_opt = argparse.Namespace(**trainer_config)
         lightning_config.trainer = trainer_config
 
@@ -637,13 +672,14 @@ if __name__ == "__main__":
 
         trainer_kwargs['max_epochs'] = 1000
         trainer_kwargs['log_every_n_steps'] = 5
-        trainer_kwargs['gradient_clip_val'] = 0.5
+        #trainer_kwargs['gradient_clip_val'] = 0.5
 
         # Add precision and accelerator settings
         if not cpu:  # Only if not running on CPU
               trainer_kwargs['precision'] = 16  # Mixed precision
               trainer_kwargs['accelerator'] = 'gpu'
-              trainer_kwargs['devices'] = gpuinfo if isinstance(gpuinfo, int) else len(gpuinfo)
+              if torch.cuda.is_available():
+                trainer_kwargs['devices'] = torch.cuda.device_count()
 
         # Optionally add learning rate scheduling callback
         lr_monitor = LearningRateMonitor(logging_interval='step')
@@ -651,8 +687,19 @@ if __name__ == "__main__":
               trainer_kwargs['callbacks'].append(lr_monitor)
 
         # Create trainer
-        trainer = Trainer.from_argparse_args(trainer_opt, **trainer_kwargs)
-        
+        #trainer = Trainer.from_argparse_args(trainer_opt, **trainer_kwargs)
+        trainer_kwargs.update({
+              "accelerator": trainer_opt.accelerator,
+              "devices": trainer_opt.devices,
+              "num_nodes": getattr(trainer_opt, "num_nodes", 1),
+              "precision": getattr(trainer_opt, "precision", "32-true"),
+              "strategy": getattr(trainer_opt, "strategy", "auto"),
+              "max_epochs": getattr(trainer_opt, "max_epochs", 1000),
+              "accumulate_grad_batches": getattr(trainer_opt, "accumulate_grad_batches", 1),
+              "check_val_every_n_epoch": getattr(trainer_opt, "check_val_every_n_epoch", 1),
+              #"gradient_clip_val": getattr(trainer_opt, "gradient_clip_val", 0.5),
+            })
+        trainer = Trainer(**trainer_kwargs)
 
         # data
         data = instantiate_from_config(config.data)
@@ -665,10 +712,10 @@ if __name__ == "__main__":
         # configure learning rate
         # configure learning rate
         bs, base_lr = config.data.params.batch_size, config.model.base_learning_rate
-        if not cpu:
-            ngpu = len(lightning_config.trainer.gpus.strip(",").split(','))
+        if torch.cuda.is_available():
+            ngpu = torch.cuda.device_count()
         else:
-          ngpu = 1
+            ngpu = 1
 
         # Safely retrieve accumulate_grad_batches with a default value of 1
         accumulate_grad_batches = lightning_config.trainer.get('accumulate_grad_batches', 1)
