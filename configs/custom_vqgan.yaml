@@ -43,7 +43,7 @@ data:
 
 lightning:
   trainer:
-    max_epochs: 42  # or set to -1 for unlimited training
+    max_epochs: 40  # or set to -1 for unlimited training
     log_every_n_steps: 10
     accelerator: gpu
     devices: 1
