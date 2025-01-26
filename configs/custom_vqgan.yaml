@@ -1,5 +1,5 @@
 model:
-  base_learning_rate: 1.0e-06
+  base_learning_rate: 1.0e-05
   target: taming.models.vqgan.VQModel
   params:
     embed_dim: 128
@@ -22,8 +22,8 @@ model:
         disc_conditional: False
         disc_in_channels: 3
         disc_start: 1000
-        disc_weight: 0.5
-        codebook_weight: 0.5
+        disc_weight: 0.3
+        codebook_weight: 0.3
 
 data:
   target: main.DataModuleFromConfig
