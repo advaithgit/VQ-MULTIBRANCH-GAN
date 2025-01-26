@@ -6,7 +6,7 @@ model:
     n_embed: 16384  # Increased for f-16 configuration
     ddconfig:
       double_z: True
-      z_channels: 512  # Corrected to align with the input channels
+      z_channels: 128  # Corrected to align with the input channels
       resolution: 256
       in_channels: 3
       out_ch: 3
