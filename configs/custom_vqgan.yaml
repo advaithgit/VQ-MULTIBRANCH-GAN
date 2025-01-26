@@ -2,16 +2,16 @@ model:
   base_learning_rate: 1.0e-06
   target: taming.models.vqgan.VQModel
   params:
-    embed_dim: 256  # Updated for f-16 configuration
-    n_embed: 16384  # Increased for f-16 configuration
+    embed_dim: 128
+    n_embed: 1024
     ddconfig:
-      double_z: True
-      z_channels: 128  # Corrected to align with the input channels
+      double_z: False
+      z_channels: 256
       resolution: 256
       in_channels: 3
       out_ch: 3
       ch: 128
-      ch_mult: [ 1, 1, 2, 2, 4 ]  # num_down = len(ch_mult)-1
+      ch_mult: [ 1,1,2,2,4]  # num_down = len(ch_mult)-1
       num_res_blocks: 2
       attn_resolutions: [16]
       dropout: 0.0
@@ -23,13 +23,13 @@ model:
         disc_in_channels: 3
         disc_start: 1000
         disc_weight: 0.5
-        codebook_weight: 1.0  # Adjusted for f-16 configuration
+        codebook_weight: 0.5
 
 data:
   target: main.DataModuleFromConfig
   params:
     batch_size: 4
-    num_workers: 4  # Increased for potential efficiency with f-16
+    num_workers: 2
     train:
       target: taming.data.custom.CustomTrain
       params:
@@ -47,4 +47,3 @@ lightning:
     log_every_n_steps: 10
     accelerator: gpu
     devices: 1
-    precision: 16  # Enable mixed-precision training
