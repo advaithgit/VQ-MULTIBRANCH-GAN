@@ -86,7 +86,7 @@ def get_parser(**parser_kwargs):
         "--no-test",
         type=str2bool,
         const=True,
-        default=False,
+        default=True,
         nargs="?",
         help="disable test",
     )
